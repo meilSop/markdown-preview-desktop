@@ -1,6 +1,7 @@
 import { promises as fsPromises, existsSync } from "fs";
-import { join } from "path";
+import { dirname, join } from "path";
 import type { CreateResult, FileNode, ReadFileResult } from "@shared/types";
+import { noteSelfChange } from "./watcher";
 
 // 目录一层扫描（懒加载）：文件夹优先，名称忽略大小写排序
 export async function readTree(dirPath: string): Promise<FileNode[]> {
@@ -45,6 +46,8 @@ export async function writeFile(
     throw new Error(`路径是文件夹，不是文件: ${filePath}`);
   }
   await fsPromises.writeFile(filePath, content, "utf-8");
+  // 自噪音埋点（需求 34）：抑制自身写盘引发的外部变更推送回环
+  noteSelfChange([dirname(filePath)]);
 }
 
 // 新建文件 / 文件夹，同名冲突直接报错
@@ -62,6 +65,7 @@ export async function create(
   } else {
     await fsPromises.writeFile(target, "", { flag: "wx" });
   }
+  noteSelfChange([parentPath]);
   // 返回形状必须对齐 shared 的 CreateResult（渲染层读 data.path），不能返回裸字符串
   return { path: target };
 }
@@ -72,6 +76,7 @@ export async function rename(oldPath: string, newPath: string): Promise<void> {
     throw new Error(`目标已存在: ${newPath}`);
   }
   await fsPromises.rename(oldPath, newPath);
+  noteSelfChange([dirname(oldPath), dirname(newPath)]);
 }
 
 // 删除，目录递归
@@ -83,4 +88,6 @@ export async function remove(
     throw new Error(`目标不存在: ${targetPath}`);
   }
   await fsPromises.rm(targetPath, { recursive: isDir });
+  // 目录删除时其内部变化事件也需被抑制：targetPath 前缀一并记录
+  noteSelfChange([dirname(targetPath), targetPath]);
 }

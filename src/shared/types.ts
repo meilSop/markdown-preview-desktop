@@ -15,6 +15,11 @@ export const IpcChannel = {
   FsCreate: "fs:create",
   FsRename: "fs:rename",
   FsDelete: "fs:delete",
+  // 工作区外部文件变更监听（V8 需求 34）：主进程对项目根 fs.watch 递归监听，
+  // 变化目录归并去抖后经 fs:watch-event 批量推送渲染层刷新文件树
+  FsWatchStart: "fs:watch-start",
+  FsWatchStop: "fs:watch-stop",
+  FsWatchEvent: "fs:watch-event",
   ExportHtml: "export:html",
   ExportPdf: "export:pdf",
   // 主题 / 偏好设置持久化（userData/settings.v2.json，主进程读写；旧 settings.json 仅迁移回退）
@@ -90,6 +95,16 @@ export interface RenameParams {
 export interface DeleteParams {
   targetPath: string;
   isDir: boolean;
+}
+
+// —— fs 监听通道（需求 34：工作区外部文件变更监听）——
+// start / stop 共用参数：dirPath 为项目根目录
+export interface WatchRootParams {
+  dirPath: string;
+}
+// 外部变化推送载荷：变化目录绝对路径列表（主进程去抖归并去重后批量推送）
+export interface FsEventPayload {
+  dirs: string[];
 }
 
 // —— export 通道 ——
@@ -179,6 +194,12 @@ export interface WindowApi {
     rename(params: RenameParams): Promise<ApiResult<VoidResult>>;
     /** 对应 fs:delete 通道（目录递归删除） */
     remove(params: DeleteParams): Promise<ApiResult<VoidResult>>;
+    /** 监听项目根的外部文件变更（重复 start 同一路径幂等，返回成功） */
+    watchRoot(params: WatchRootParams): Promise<ApiResult<VoidResult>>;
+    /** 停止监听项目根（未监听时静默成功） */
+    unwatchRoot(params: WatchRootParams): Promise<ApiResult<VoidResult>>;
+    /** 订阅外部变更推送，返回取消订阅函数（模式同 win.onFlushRequest） */
+    onFsEvent(listener: (payload: FsEventPayload) => void): () => void;
   };
   dialog: {
     openFile(): Promise<ApiResult<OpenFileResult | null>>;

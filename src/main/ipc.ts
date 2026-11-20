@@ -13,10 +13,12 @@ import {
   type SaveExportParams,
   type SearchParams,
   type VoidResult,
+  type WatchRootParams,
   type WriteFileParams,
   type WriteSettingsParams,
 } from "@shared/types";
 import * as fsService from "./services/fs";
+import * as watcherService from "./services/watcher";
 import * as dialogService from "./services/dialog";
 import * as exportService from "./services/export";
 import * as settingsService from "./services/settings";
@@ -52,6 +54,20 @@ export function registerIpcHandlers(): void {
   );
   ipcMain.handle(IpcChannel.FsDelete, (_e, params: DeleteParams) =>
     wrap(() => fsService.remove(params.targetPath, params.isDir)),
+  );
+
+  // fs 监听通道（需求 34：项目根外部变更监听，句柄管理在 services/watcher）
+  ipcMain.handle(IpcChannel.FsWatchStart, (event, params: WatchRootParams) =>
+    wrap(() => {
+      watcherService.startWatch(params.dirPath, event.sender);
+      return null;
+    }),
+  );
+  ipcMain.handle(IpcChannel.FsWatchStop, (_e, params: WatchRootParams) =>
+    wrap(() => {
+      watcherService.stopWatch(params.dirPath);
+      return null;
+    }),
   );
 
   // dialog 通道

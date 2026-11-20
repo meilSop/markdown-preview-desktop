@@ -3,6 +3,7 @@ import type {
   ApiResult,
   CreateResult,
   FileNode,
+  FsEventPayload,
   VoidResult,
 } from "@shared/types";
 import { useTabsStore } from "@/stores/tabs";
@@ -56,7 +57,7 @@ export const useWorkspaceStore = defineStore("workspace", {
   actions: {
     // 启动恢复：settings.v2.json 里的根路径还原成根列表。逐根经 fs:read-tree 校验：
     // 磁盘上已删除/不可访问的根剔除并回写持久化列表（避免僵尸项目残留），
-    // 成功的根顺手预热一层缓存，首次展开免读盘
+    // 成功的根顺手预热一层缓存，首次展开免读盘；每个恢复成功的根注册外部变更监听
     async restoreRoots(paths: string[]): Promise<void> {
       const results = await Promise.allSettled(
         paths.map(async (path) => {
@@ -78,6 +79,8 @@ export const useWorkspaceStore = defineStore("workspace", {
         }
       });
       this.roots = restored;
+      // 逐根注册外部变更监听（需求 34）：失败静默降级，不阻塞根恢复
+      for (const root of restored) watchRootQuietly(root.path);
       if (dropped) await this.persistRoots();
     },
     // 打开文件夹：弹窗选择 → 追加新根（重复路径不重复添加，tab 不受影响）
@@ -97,10 +100,11 @@ export const useWorkspaceStore = defineStore("workspace", {
       this.childrenCache.set(path, tree.data);
       this.expandedDirs.add(path); // 新根默认展开一层
       this.error = null;
+      watchRootQuietly(path); // 新根同步注册外部变更监听（需求 34）
       await this.persistRoots();
       return { ok: true, data: null };
     },
-    // 仅从左侧列表移除根（不删磁盘文件）：清对应缓存与展开态；
+    // 仅从左侧列表移除根（不删磁盘文件）：清对应缓存与展开态并停止监听；
     // 根下已打开的 tab 保留不动（文件还在盘上，自动保存照常）
     removeRoot(path: string): void {
       this.roots = this.roots.filter((r) => r.path !== path);
@@ -116,6 +120,8 @@ export const useWorkspaceStore = defineStore("workspace", {
       if (this.renaming && isWithin(this.renaming.path, path)) {
         this.renaming = null;
       }
+      // 停止该根的外部变更监听（未监听时主进程静默成功）
+      void window.api.fs.unwatchRoot({ dirPath: path });
       void this.persistRoots();
     },
     // 根列表持久化：经 settings 通道写入 settings.v2.json（失败在 settings persist 内提示）
@@ -250,10 +256,106 @@ export const useWorkspaceStore = defineStore("workspace", {
       this.childrenCache.set(dirPath, ret.data);
       return ret;
     },
+    // 根目录手动刷新（文件树根行刷新按钮）：重读该根下所有已懒加载的目录层
+    // （childrenCache 命中即刷，未展开的层不读盘），展开状态保持不变。
+    // 根自身 ENOENT 时复用 removeRoot 剔根（与外部变更同语义）；其余失败：
+    // 根层报错到 this.error（用户主动操作需可见反馈），子层清缓存自愈
+    // （下次展开懒加载重读，同 handleFsEvent 降级策略）
+    async refreshRoot(rootPath: string): Promise<void> {
+      const dirs = [...this.childrenCache.keys()].filter((dir) =>
+        isWithin(dir, rootPath),
+      );
+      const results = await Promise.allSettled(
+        dirs.map(async (dir) => ({
+          dir,
+          ret: await window.api.fs.readTree({ dirPath: dir }),
+        })),
+      );
+      let rootVanished = false;
+      let failed = false;
+      for (const res of results) {
+        if (res.status === "rejected") continue; // readTree 正常不 reject，防御跳过
+        const { dir, ret } = res.value;
+        if (ret.ok) {
+          this.childrenCache.set(dir, ret.data);
+          continue;
+        }
+        console.warn("[workspace] 手动刷新失败:", dir, ret.error);
+        // 错误串为 wrap 收敛的 fs err.message，恒以错误码开头（同 handleFsEvent 判定）
+        if (dir === rootPath && ret.error.startsWith("ENOENT")) {
+          rootVanished = true;
+          continue;
+        }
+        failed = true;
+        if (dir !== rootPath) dropTreePaths(this, dir);
+      }
+      if (rootVanished) {
+        this.removeRoot(rootPath);
+        return;
+      }
+      this.error = failed ? "刷新失败：部分目录不可读，已保留原列表" : null;
+    },
+    // 外部变更同步（需求 34）：主进程 fs.watch 归并去抖后的变化目录批量推送过来，
+    // 对受影响的已懒加载目录层定向重读刷新（复用 childrenCache 缓存语义）。
+    // 全程不设置 this.error（外部变更静默降级，不污染全局错误展示）
+    async handleFsEvent(payload: FsEventPayload): Promise<void> {
+      // 受影响集合：changed 在某缓存目录的子树内（含相等）即该目录层受影响——
+      // changed 子项在 dir 层新增/消失/改名，或 changed 即 dir 自身层内容变化
+      const affected = new Set<string>();
+      for (const changed of payload.dirs) {
+        for (const dir of [...this.childrenCache.keys()]) {
+          if (isWithin(changed, dir)) affected.add(dir);
+        }
+      }
+      await Promise.allSettled(
+        [...affected].map(async (dir) => {
+          const ret = await window.api.fs.readTree({ dirPath: dir });
+          if (ret.ok) {
+            this.childrenCache.set(dir, ret.data);
+            return;
+          }
+          // 刷新失败：清其子树缓存/展开态/挂起内联输入——目录真消失时剔除
+          // 僵尸状态；仅临时不可读时缓存清空自愈（下次展开懒加载重读），无害
+          console.warn(`[workspace] 外部变更刷新失败: ${dir}`, ret.error);
+          dropTreePaths(this, dir);
+          // 根剔除仅在确认路径不存在时执行（防僵尸根残留）：
+          // stat/readdir 的 ENOENT 才等于「根目录消失」（PRD 语义），临时不可读
+          // （EPERM/EBUSY，本机加密驱动已知会短暂锁文件）不剔——剔根 + persistRoots
+          // 是不可自愈的持久后果，误伤会丢用户项目列表。错误串为 wrap 收敛的
+          // fs err.message，恒以错误码开头，startsWith 判定稳定
+          const vanished = ret.error.startsWith("ENOENT");
+          if (vanished && this.roots.some((r) => r.path === dir)) {
+            this.roots = this.roots.filter((r) => r.path !== dir);
+            void this.persistRoots();
+          }
+        }),
+      );
+    },
   },
 });
 
 type WorkspaceStoreInstance = ReturnType<typeof useWorkspaceStore>;
+
+// 静默注册项目根外部变更监听（需求 34）：invoke 异常与 {ok:false} 均仅 console.warn
+// 降级（监听失败时文件树退化为手动刷新），不阻塞根恢复/打开主流程
+function watchRootQuietly(path: string): void {
+  void window.api.fs
+    .watchRoot({ dirPath: path })
+    .then((ret) => {
+      if (!ret.ok) {
+        console.warn(
+          `[workspace] 项目根监听失败（降级为手动刷新）: ${path}`,
+          ret.error,
+        );
+      }
+    })
+    .catch((err) => {
+      console.warn(
+        `[workspace] 项目根监听调用异常（降级为手动刷新）: ${path}`,
+        err,
+      );
+    });
+}
 
 // 旧前缀 → 新前缀的映射（含自身与子孙路径，两种分隔符兼容）
 function remap(oldPath: string, newPath: string, p: string): string {

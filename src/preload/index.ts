@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer } from "electron";
-import { IpcChannel, type WindowApi } from "@shared/types";
+import { IpcChannel, type FsEventPayload, type WindowApi } from "@shared/types";
 
 // sandbox 模式下只能用 ipcRenderer.invoke，不透传 ipcRenderer 本身
 const api: WindowApi = {
@@ -10,6 +10,17 @@ const api: WindowApi = {
     create: (params) => ipcRenderer.invoke(IpcChannel.FsCreate, params),
     rename: (params) => ipcRenderer.invoke(IpcChannel.FsRename, params),
     remove: (params) => ipcRenderer.invoke(IpcChannel.FsDelete, params),
+    // 项目根外部变更监听（需求 34）
+    watchRoot: (params) => ipcRenderer.invoke(IpcChannel.FsWatchStart, params),
+    unwatchRoot: (params) => ipcRenderer.invoke(IpcChannel.FsWatchStop, params),
+    // 订阅外部变更推送（模式同 win.onFlushRequest）：listener 包一层 wrapped，
+    // 返回 removeListener 取消函数
+    onFsEvent: (listener) => {
+      const wrapped = (_event: unknown, payload: FsEventPayload): void =>
+        listener(payload);
+      ipcRenderer.on(IpcChannel.FsWatchEvent, wrapped);
+      return () => ipcRenderer.removeListener(IpcChannel.FsWatchEvent, wrapped);
+    },
   },
   dialog: {
     openFile: () => ipcRenderer.invoke(IpcChannel.DialogOpenFile),

@@ -2,6 +2,7 @@ import { app, BrowserWindow, shell } from "electron";
 import { join } from "path";
 import { registerIpcHandlers } from "./ipc";
 import { readSettings } from "./services/settings";
+import { stopAll } from "./services/watcher";
 import { IpcChannel } from "@shared/types";
 
 // 外链统一交系统浏览器打开（预览区 linkify 会渲染真实 <a>，点击不允许劫持应用窗口）
@@ -82,3 +83,6 @@ app.whenReady().then(async () => {
 app.on("window-all-closed", () => {
   if (process.platform !== "darwin") app.quit();
 });
+
+// 退出时关闭全部 fs.watch 句柄（需求 34），防止监听挂住进程不退出
+app.on("will-quit", () => stopAll());

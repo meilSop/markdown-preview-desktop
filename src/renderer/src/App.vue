@@ -96,6 +96,8 @@ function onEditorScroll(line: number): void {
 
 // 退出 flush：主进程拦 close 后通知过来，写盘完成再 invoke 确认，主进程销毁窗口
 let offFlush: (() => void) | null = null;
+// 外部文件变更推送（需求 34）：主进程 fs.watch 归并去抖后批量推送，驱动文件树同步
+let offFsEvent: (() => void) | null = null;
 onMounted(() => {
   // settings 读完后按持久化的根路径恢复文件树（逐根校验预热首层，深层仍懒加载）
   void settings
@@ -107,9 +109,13 @@ onMounted(() => {
       void window.api.win.flushDone();
     });
   });
+  offFsEvent = window.api.fs.onFsEvent((payload) => {
+    void workspace.handleFsEvent(payload);
+  });
 });
 onBeforeUnmount(() => {
   offFlush?.();
+  offFsEvent?.();
 });
 </script>
 

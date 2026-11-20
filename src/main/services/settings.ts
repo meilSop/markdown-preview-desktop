@@ -4,7 +4,7 @@ import { join } from "path";
 import type { LayoutMode, SettingsData, ThemeMode } from "@shared/types";
 
 // 设置存储文件：settings.v2.json 存 userData 目录：主题 + 界面背景色覆盖
-// + 文件树项目根列表（V2 多项目）+ 布局模式（V3 需求 19）
+// + 文件树项目根列表（V2 多项目）+ 布局模式（V3 需求 19）+ 侧栏宽度（V8 需求 27）
 // V6 需求 23 最终根因（修正早先"亿赛通加密驱动锁文件"的误判）：V2 起渲染层
 // persist 把 Pinia reactive Proxy 数组直接传 invoke，V8 structured clone 对
 // Proxy 抛 DataCloneError，写调用从未到达主进程——失效与主进程写盘无关，已在
@@ -15,6 +15,9 @@ const THEME_MODES: ThemeMode[] = ["light", "dark", "system"];
 const LAYOUT_MODES: LayoutMode[] = ["edit", "preview", "split"];
 // 背景色只接受 #rrggbb（渲染层 color input 的输出格式），其余一律视为未自定义
 const HEX_COLOR = /^#[0-9a-fA-F]{6}$/;
+// 侧栏内容区宽度限幅（V8 需求 27）：合法区间 200–600，越界回落 null（默认 288）
+const SIDEBAR_WIDTH_MIN = 200;
+const SIDEBAR_WIDTH_MAX = 600;
 // 写盘重试参数（V3 需求 20）：最多 4 次尝试、每次间隔 250ms
 const WRITE_MAX_ATTEMPTS = 4;
 const WRITE_RETRY_INTERVAL_MS = 250;
@@ -23,6 +26,7 @@ const DEFAULT_SETTINGS: SettingsData = {
   backgroundColor: null,
   roots: [],
   layoutMode: "split",
+  sidebarWidth: null,
 };
 
 // 进程内缓存最近一次读写的配置：主进程侧消费方经 getCurrentSettings 直接取用
@@ -62,6 +66,15 @@ function normalize(raw: unknown): SettingsData {
     layoutMode: LAYOUT_MODES.includes(obj.layoutMode as LayoutMode)
       ? (obj.layoutMode as LayoutMode)
       : DEFAULT_SETTINGS.layoutMode,
+    // 非 null 且非有限数值 / 超出 200–600 限幅一律回落 null（= 默认宽度），
+    // 与主题色同风格的越界即视为未自定义
+    sidebarWidth:
+      typeof obj.sidebarWidth === "number" &&
+      Number.isFinite(obj.sidebarWidth) &&
+      obj.sidebarWidth >= SIDEBAR_WIDTH_MIN &&
+      obj.sidebarWidth <= SIDEBAR_WIDTH_MAX
+        ? obj.sidebarWidth
+        : null,
   };
 }
 
@@ -69,9 +82,9 @@ function normalize(raw: unknown): SettingsData {
 // 启动）、JSON 损坏，或 JSON 合法但缺 theme 字段（obj.theme === undefined，即
 // 非应用写入的合法配置——盘上现存被诊断探针污染的 {"t":2}，该目录删除被管控
 // 无法清理）时，均视同 v2 不存在，回读旧 settings.json 迁移，旧字段经 normalize
-// 补齐默认（roots/layoutMode 回落默认值）；v2 已损坏但有 theme 的情况维持现状
-// （损坏即回退旧文件）；两者都无则回落默认——保持"首次启动无文件回落默认"的
-// 既有语义，不视为错误
+// 补齐默认（roots/layoutMode/sidebarWidth 回落默认值）；v2 已损坏但有 theme 的
+// 情况维持现状（损坏即回退旧文件）；两者都无则回落默认——保持"首次启动无文件
+// 回落默认"的既有语义，不视为错误
 export async function readSettings(): Promise<SettingsData> {
   // v2 有效判定：能解析成对象且含 theme 字段才算 v2 存在，其余一律迁移回退
   let v2: unknown = null;

@@ -15,6 +15,9 @@ export const useSettingsStore = defineStore("settings", {
     roots: [] as string[],
     // 布局模式（编辑 / 预览 / 分屏，V3 需求 19）：纯布局状态，不改 CSS 变量
     layoutMode: "split" as LayoutMode,
+    // 侧栏内容区宽度 px（48px 活动条之外，V8 需求 27）：null = 默认 288。
+    // 拖拽中的实时宽度由 App.vue 本地 ref 驱动渲染，松手才经 setSidebarWidth 落盘
+    sidebarWidth: null as number | null,
     systemDark: darkMedia.matches,
   }),
   getters: {
@@ -46,6 +49,7 @@ export const useSettingsStore = defineStore("settings", {
         this.backgroundColor = ret.data.backgroundColor;
         this.roots = ret.data.roots;
         this.layoutMode = ret.data.layoutMode;
+        this.sidebarWidth = ret.data.sidebarWidth;
       } else {
         console.error("[settings] 读取失败:", ret.error);
       }
@@ -72,6 +76,12 @@ export const useSettingsStore = defineStore("settings", {
       this.layoutMode = mode;
       await this.persist();
     },
+    // 侧栏宽度（V8 需求 27）：App.vue 拖拽结束时（mouseup）持久化一次，
+    // 拖拽过程不经此 action（避免每次 mousemove 都写盘，松手才写）
+    async setSidebarWidth(width: number | null): Promise<void> {
+      this.sidebarWidth = width;
+      await this.persist();
+    },
     // 根列表镜像更新（workspaceStore 增删根后调用）
     async setRoots(paths: string[]): Promise<void> {
       this.roots = paths;
@@ -85,9 +95,10 @@ export const useSettingsStore = defineStore("settings", {
         backgroundColor: this.backgroundColor,
         // 展开为普通数组再过 IPC：Pinia state 是 reactive Proxy，structured
         // clone 对 Proxy 抛 DataCloneError，写入从未到达主进程（V2 起持久化
-        // 失效的真因）；其余三个字段是原始值，Proxy 上取值即得原始值，无此问题
+        // 失效的真因）；其余字段是原始值，Proxy 上取值即得原始值，无此问题
         roots: [...this.roots],
         layoutMode: this.layoutMode,
+        sidebarWidth: this.sidebarWidth,
       };
       try {
         const ret = await window.api.settings.write(data);

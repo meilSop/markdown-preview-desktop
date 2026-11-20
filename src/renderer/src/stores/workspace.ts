@@ -34,6 +34,9 @@ export const useWorkspaceStore = defineStore("workspace", {
     expandedDirs: new Set<string>(),
     creating: null as CreatingState | null,
     renaming: null as RenamingState | null,
+    // 文件树聚焦路径（V8 需求 31）：跟随激活 tab 的 reveal in tree 目标，
+    // FileTreeNode 命中时叠加 focused 高亮；文件不在树中时保留（树外无从高亮）
+    focusedPath: null as string | null,
     // 工作区级错误（FileTree 底部展示；内联输入的错误由输入框就地显示）
     error: null as string | null,
   }),
@@ -162,6 +165,18 @@ export const useWorkspaceStore = defineStore("workspace", {
         }
         this.expandedDirs.add(dir);
       }
+    },
+    // reveal in tree（V8 需求 31）：记录聚焦路径并逐层展开父链让目标可见。
+    // 复用 expandTo（懒加载缺失层）——其链尾即展开目标，文件路径改传父目录，
+    // 避免对文件路径 readTree 报错；文件不在任何项目根下时静默不展开但保留
+    // focusedPath（树外节点无从渲染，高亮自然不可见）。展开加载只改树状态，
+    // 不回写 tabs，不会循环触发
+    async revealInTree(path: string): Promise<void> {
+      this.focusedPath = path;
+      if (!this.roots.some((r) => isWithin(path, r.path))) return;
+      const parent = dirname(path);
+      if (parent === path) return; // 防御：路径无父级（不应出现）
+      await this.expandTo(parent);
     },
     // 进入内联新建：从根到目标逐层展开，保证输入行可见
     startCreate(parentPath: string, type: "file" | "dir"): void {

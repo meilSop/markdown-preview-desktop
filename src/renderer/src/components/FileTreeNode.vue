@@ -23,6 +23,8 @@ const children = computed(
   () => workspace.childrenCache.get(props.node.path) ?? [],
 );
 const isActiveFile = computed(() => tabs.activeTab?.path === props.node.path);
+// 树内聚焦高亮（V8 需求 31）：reveal in tree 的目标文件，与 active 选中态同款配色叠加
+const isFocused = computed(() => workspace.focusedPath === props.node.path);
 const isRenaming = computed(() => workspace.renaming?.path === props.node.path);
 const isCreatingHere = computed(
   () => workspace.creating?.parentPath === props.node.path,
@@ -56,9 +58,10 @@ function onMouseDown(ev: MouseEvent): void {
   <div class="tree-node">
     <div
       class="node-row"
-      :class="{ active: isActiveFile }"
+      :class="{ active: isActiveFile, focused: isFocused }"
       :style="{ paddingLeft: `${depth * 14 + 8}px` }"
       :title="node.path"
+      :data-path="node.path"
       @mousedown="onMouseDown"
       @click="onClick"
     >
@@ -114,7 +117,10 @@ function onMouseDown(ev: MouseEvent): void {
 .node-row:hover {
   background: var(--color-accent-soft);
 }
-.node-row.active {
+/* active = 点击/激活 tab 的文件；focused = reveal in tree 跟随激活 tab 的目标
+   （V8 需求 31）：同款配色，两者叠加不冲突 */
+.node-row.active,
+.node-row.focused {
   background: var(--color-accent-soft);
   color: var(--color-accent);
 }

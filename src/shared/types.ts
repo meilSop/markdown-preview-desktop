@@ -27,6 +27,9 @@ export const IpcChannel = {
   WinMinimize: "win:minimize",
   WinMaximizeToggle: "win:maximize-toggle",
   WinClose: "win:close",
+  // 全局检索（V7 需求 25）：工作区多根递归搜索 / 替换
+  SearchInWorkspace: "search:in-workspace",
+  SearchReplace: "search:replace",
 } as const;
 
 // —— 统一返回包装：所有 invoke 结果均为判别联合 ——
@@ -120,9 +123,51 @@ export interface SettingsData {
   roots: string[];
   /** 编辑/预览/分屏布局，默认 split */
   layoutMode: LayoutMode;
+  /** 侧栏内容区宽度 px（48px 活动条之外，V8 需求 27），合法区间 200–600；null = 默认 288 */
+  sidebarWidth: number | null;
 }
 export type ReadSettingsResult = SettingsData;
 export type WriteSettingsParams = SettingsData;
+
+// —— search 通道（V7 需求 25：全局检索 / 替换）——
+export interface SearchParams {
+  /** 工作区根路径列表（渲染层从 workspace store 取值后 map 解包为普通数组，禁传 reactive Proxy） */
+  roots: string[];
+  query: string;
+  caseSensitive: boolean;
+  wholeWord: boolean;
+  useRegex: boolean;
+  /** 逗号分隔 glob（相对根的 POSIX 风格路径，如 "*.md, docs/**"）；空串 = 不过滤 */
+  include: string;
+  /** 同 include，任一模式命中即排除 */
+  exclude: string;
+}
+export interface SearchMatch {
+  path: string;
+  /** 1-based 行号 */
+  line: number;
+  /** 命中行文本（超长时以命中点为中心截断，偏移相对截断后的文本） */
+  lineText: string;
+  /** matchStart/matchEnd 为 lineText 内的字符偏移，高亮区间 [matchStart, matchEnd) */
+  matchStart: number;
+  matchEnd: number;
+}
+export interface SearchResult {
+  matches: SearchMatch[];
+  /** 命中文件数（matches 内去重后的文件路径数） */
+  fileCount: number;
+  /** 文件数或命中行达到上限被截断 */
+  truncated: boolean;
+}
+export interface ReplaceParams extends SearchParams {
+  replacement: string;
+}
+export interface ReplaceResult {
+  totalReplaced: number;
+  files: { path: string; count: number }[];
+  /** 达到总时间预算被截断：已替换部分保持写盘，可再次执行替换完成剩余（check 轮补充） */
+  truncated: boolean;
+}
 
 // —— preload 暴露给渲染层的 window.api 对象结构（类型链：shared → preload → renderer）——
 export interface WindowApi {
@@ -161,5 +206,11 @@ export interface WindowApi {
     maximizeToggle(): Promise<ApiResult<VoidResult>>;
     /** 关闭窗口（走主进程 close 拦截 flush 流程，非 destroy） */
     close(): Promise<ApiResult<VoidResult>>;
+  };
+  search: {
+    /** 全局检索（多根递归扫描，上限防卡顿） */
+    inWorkspace(params: SearchParams): Promise<ApiResult<SearchResult>>;
+    /** 全局替换：逐行匹配替换后写盘 UTF-8（已开 tab 的写盘保护由渲染层编排） */
+    replace(params: ReplaceParams): Promise<ApiResult<ReplaceResult>>;
   };
 }

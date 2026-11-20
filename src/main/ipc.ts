@@ -9,7 +9,9 @@ import {
   type ReadFileParams,
   type ReadTreeParams,
   type RenameParams,
+  type ReplaceParams,
   type SaveExportParams,
+  type SearchParams,
   type VoidResult,
   type WriteFileParams,
   type WriteSettingsParams,
@@ -18,6 +20,7 @@ import * as fsService from "./services/fs";
 import * as dialogService from "./services/dialog";
 import * as exportService from "./services/export";
 import * as settingsService from "./services/settings";
+import * as searchService from "./services/search";
 
 // 统一包装：业务异常转成 ApiResult{ok:false}，错误信息用户可读
 async function wrap<T>(fn: () => Promise<T> | T): Promise<ApiResult<T>> {
@@ -76,6 +79,14 @@ export function registerIpcHandlers(): void {
   );
   ipcMain.handle(IpcChannel.SettingsWrite, (_e, params: WriteSettingsParams) =>
     wrap(() => settingsService.writeSettings(params)),
+  );
+
+  // search 通道（V7 需求 25：全局检索 / 替换，多根递归扫描在 services/search）
+  ipcMain.handle(IpcChannel.SearchInWorkspace, (_e, params: SearchParams) =>
+    wrap(() => searchService.searchInWorkspace(params)),
+  );
+  ipcMain.handle(IpcChannel.SearchReplace, (_e, params: ReplaceParams) =>
+    wrap(() => searchService.replaceInWorkspace(params)),
   );
 
   // 退出 flush 确认：渲染层写盘完成后销毁窗口（close 事件里已 preventDefault）

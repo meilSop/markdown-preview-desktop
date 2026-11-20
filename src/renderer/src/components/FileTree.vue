@@ -1,12 +1,66 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from "vue";
+import {
+  computed,
+  nextTick,
+  onBeforeUnmount,
+  onMounted,
+  ref,
+  watch,
+} from "vue";
 import type { FileNode } from "@shared/types";
 import ConfirmDialog from "./ConfirmDialog.vue";
 import FileTreeNode from "./FileTreeNode.vue";
 import { useWorkspaceStore } from "@/stores/workspace";
+import { useTabsStore } from "@/stores/tabs";
 
-// 文件树容器：多项目根 + 懒加载树 + 右键菜单（自实现）+ 删除/移除确认
+// 文件树容器：多项目根 + 懒加载树 + 右键菜单（自实现）+ 删除/移除确认。
+// visible 由 SideBar 按 activeView 传入（V8 需求 29 v-show 常驻的伴生信号）
+const props = defineProps<{ visible: boolean }>();
+
 const workspace = useWorkspaceStore();
+const tabs = useTabsStore();
+
+// 树容器引用：reveal in tree 时在容器内按 data-path 查找目标节点滚动到可见（V8 需求 31）
+const treeEl = ref<HTMLElement | null>(null);
+
+// reveal 目标滚动到可见：按 focusedPath 查节点居中（CSS.escape 转义 Windows 反斜杠等
+// 特殊字符，保证属性选择器字面匹配）
+function scrollToFocused(): void {
+  if (!workspace.focusedPath) return;
+  treeEl.value
+    ?.querySelector(`[data-path="${CSS.escape(workspace.focusedPath)}"]`)
+    ?.scrollIntoView({ block: "center" });
+}
+
+// 隐藏期间发起的 reveal（检索跳行时 explorer 处于 display:none，scrollIntoView
+// 静默失败）记一笔待补滚，切回 explorer 时补一次定位（check 轮补充）
+let revealPending = false;
+
+// 文件树跟随激活 tab（V8 需求 31）：激活路径变化（打开 / 切换 / 检索跳行）时 reveal——
+// 展开父链（懒加载缺失层）+ focused 高亮，nextTick 等待新层渲染后滚动到可见。
+// 只 watch 激活路径一处，展开/加载只改树状态不回写 tabs，无循环触发；
+// path 为空（关闭全部 tab）直接 return 不清 focusedPath（保持既有高亮，与
+// VSCode 关闭编辑器后资源管理器选中态保留的行为一致）
+watch(
+  () => tabs.activeTab?.path,
+  async (path) => {
+    if (!path) return;
+    await workspace.revealInTree(path);
+    await nextTick();
+    if (props.visible) scrollToFocused();
+    else revealPending = true;
+  },
+);
+
+// 切回 explorer 视图时消费待补滚（V8 需求 31，check 轮补充）
+watch(
+  () => props.visible,
+  (visible) => {
+    if (!visible || !revealPending) return;
+    revealPending = false;
+    void nextTick(scrollToFocused);
+  },
+);
 
 // 右键菜单状态：node 为 null 表示树空白区域（作用对象为第一个根）；
 // isRoot 由 FileTreeNode 按 depth === 0 上报（第一层节点即项目根，不按路径比对）
@@ -131,7 +185,12 @@ async function onConfirm(): Promise<void> {
 </script>
 
 <template>
-  <div class="file-tree" @mousedown="onBgMouseDown" @contextmenu.prevent>
+  <div
+    ref="treeEl"
+    class="file-tree"
+    @mousedown="onBgMouseDown"
+    @contextmenu.prevent
+  >
     <template v-if="workspace.hasWorkspace">
       <!-- 项目根作为第一层节点渲染：可展开/收起，懒加载逻辑与普通目录一致 -->
       <FileTreeNode

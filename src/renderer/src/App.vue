@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onBeforeUnmount, onMounted, ref } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 import TitleBar from "@/components/TitleBar.vue";
 import SideBar from "@/components/SideBar.vue";
 import TabBar from "@/components/TabBar.vue";
@@ -43,6 +43,51 @@ function startDrag(): void {
   window.addEventListener("mouseup", onUp);
 }
 
+// —— 侧栏宽度拖拽（V8 需求 27）——
+// 活动条固定 48px，内容区宽度 = clientX - 48，限幅 200–600
+const SIDEBAR_ACTIVITY_BAR_WIDTH = 48;
+const SIDEBAR_WIDTH_MIN = 200;
+const SIDEBAR_WIDTH_MAX = 600;
+// 拖拽中的实时宽度：null = 未在拖拽（或本次拖拽尚未产生 mousemove）；
+// 渲染优先取拖拽值，松手才经 setSidebarWidth 落盘
+const dragSidebarWidth = ref<number | null>(null);
+const sidebarDragging = ref(false);
+
+// 侧栏总宽 = 48px 活动条 + 内容区（拖拽中实时值 ?? settings.sidebarWidth ?? 默认 288），
+// 以内联样式驱动（原 --sidebar-width CSS 变量已移除，见 variables.css）
+const sidebarWidthStyle = computed(() => ({
+  width: `${
+    SIDEBAR_ACTIVITY_BAR_WIDTH +
+    (dragSidebarWidth.value ?? settings.sidebarWidth ?? 288)
+  }px`,
+}));
+
+// 拖拽实现复用 .split-divider 的 mousedown + window 级 mousemove/mouseup 模式；
+// 持久化仅在 mouseup 时经 setSidebarWidth 走一次既有 settings 读写链（松手才写）
+function startSidebarDrag(ev: MouseEvent): void {
+  ev.preventDefault();
+  sidebarDragging.value = true;
+  const onMove = (e: MouseEvent): void => {
+    dragSidebarWidth.value = Math.min(
+      SIDEBAR_WIDTH_MAX,
+      Math.max(SIDEBAR_WIDTH_MIN, e.clientX - SIDEBAR_ACTIVITY_BAR_WIDTH),
+    );
+  };
+  const onUp = (): void => {
+    sidebarDragging.value = false;
+    window.removeEventListener("mousemove", onMove);
+    window.removeEventListener("mouseup", onUp);
+    // 仅在实际拖拽过（产生了 mousemove）时持久化：原样点击分隔条不改宽度，
+    // 避免把已自定义的宽度重置回默认 288（check 轮修复）
+    if (dragSidebarWidth.value !== null) {
+      void settings.setSidebarWidth(dragSidebarWidth.value);
+    }
+    dragSidebarWidth.value = null;
+  };
+  window.addEventListener("mousemove", onMove);
+  window.addEventListener("mouseup", onUp);
+}
+
 // 滚动同步接线（单向）：编辑器视口顶行号 → 预览对齐到对应标题
 const previewRef = ref<InstanceType<typeof MarkdownPreview> | null>(null);
 function onEditorScroll(line: number): void {
@@ -72,7 +117,13 @@ onBeforeUnmount(() => {
   <div class="app-shell">
     <TitleBar @open-settings="settingsOpen = true" />
     <div class="app-body">
-      <SideBar />
+      <!-- 侧栏宽度由本组件按拖拽/settings.sidebarWidth 内联驱动（V8 需求 27） -->
+      <SideBar :style="sidebarWidthStyle" />
+      <div
+        class="sidebar-divider"
+        :class="{ dragging: sidebarDragging }"
+        @mousedown="startSidebarDrag"
+      ></div>
       <main class="main-area">
         <TabBar />
         <!-- 主操作区三分支（V3 需求 19）：按 layoutMode 渲染仅编辑 / 仅预览 / 分屏；
@@ -135,6 +186,18 @@ onBeforeUnmount(() => {
   display: flex;
   flex-direction: column;
   min-width: 0;
+}
+/* 侧栏与主区之间的拖拽分隔条（V8 需求 27）：模式同 .split-divider，
+   边界视觉由其承担（SideBar 原 border-right 已移除） */
+.sidebar-divider {
+  width: 4px;
+  flex-shrink: 0;
+  cursor: col-resize;
+  background: var(--color-border);
+}
+.sidebar-divider:hover,
+.sidebar-divider.dragging {
+  background: var(--color-accent);
 }
 .split {
   flex: 1;

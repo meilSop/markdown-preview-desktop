@@ -38,6 +38,12 @@ const api: WindowApi = {
     maximizeToggle: () => ipcRenderer.invoke(IpcChannel.WinMaximizeToggle),
     close: () => ipcRenderer.invoke(IpcChannel.WinClose),
   },
+  // 全局检索（V7 需求 25）
+  search: {
+    inWorkspace: (params) =>
+      ipcRenderer.invoke(IpcChannel.SearchInWorkspace, params),
+    replace: (params) => ipcRenderer.invoke(IpcChannel.SearchReplace, params),
+  },
 };
 
 contextBridge.exposeInMainWorld("api", api);
